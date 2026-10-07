@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/checkpoint"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/git"
@@ -1175,6 +1176,22 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		if stripped := stripOverlayCLAUDEmd(g, defaultBranch, baseRef); stripped {
 			// Recalculate commits ahead since we added a cleanup commit
 			aheadCount, _ = g.CommitsAhead(baseRef, "HEAD")
+		}
+
+		// Collapse checkpoint_dog's "WIP: checkpoint (auto)" commits before the
+		// branch leaves the worktree, so they never reach the target branch however
+		// the Refinery lands it. Skipped once the branch has been pushed, since
+		// rewriting it then would need a force push.
+		if checkpoints[CheckpointPushed] != branch {
+			if wip, err := checkpoint.CountWIPCommits(g.WorkDir(), baseRef); err != nil {
+				style.PrintWarning("could not count WIP checkpoint commits: %v", err)
+			} else if wip > 0 {
+				if _, err := checkpoint.SquashWIPCommits(g.WorkDir(), baseRef); err != nil {
+					return fmt.Errorf("squashing %d WIP checkpoint commit(s): %w", wip, err)
+				}
+				fmt.Printf("%s Squashed %d WIP checkpoint commit(s)\n", style.Bold.Render("✓"), wip)
+				aheadCount, _ = g.CommitsAhead(baseRef, "HEAD")
+			}
 		}
 
 		// Determine merge strategy from convoy (gt-myofa.3)
