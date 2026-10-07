@@ -626,6 +626,16 @@ Determine `<merge-target>` using the **Target Resolution Rule** above.
 
 **If merge_strategy = "direct" (default):**
 
+Preferred: one command merges, pushes, verifies, runs post-merge cleanup and nudges the mayor:
+```bash
+gt mq land <rig> <mr-bead-id>
+```
+If it succeeds, skip to sending MERGED to the Witness. If it reports a conflict or gate
+failure, the MR stays open and the polecat has been notified; go to loop-check. Use the manual
+steps below only when `gt mq land` is unavailable, and never replace `gt mq post-merge` with
+`bd close` on the MR bead or land with `git merge --ff-only`.
+
+Manual fallback:
 ```bash
 git checkout <merge-target>
 git merge --no-ff -m "Merge <polecat-branch> into <merge-target>" origin/<polecat-branch>
@@ -1283,3 +1293,7 @@ SessionStart hook runs gt prime, and your successor picks up from the hook.
 
 **IMPORTANT**: Never sleep-poll manually (e.g., `sleep 30 && bd list`).
 Always use `gt mol step await-event` — it's event-driven and tracks backoff state."""
+
+# MERGE RULE (repeated at the end for agents that read only the tail of their prime):
+# land each MR with `gt mq land <rig> <mr-bead-id>`. Never `git merge --ff-only`, never
+# `bd close` a merge-request bead; skipping post-merge leaks the polecat's slot.
