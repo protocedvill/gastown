@@ -1292,8 +1292,8 @@ SessionStart hook runs gt prime, and your successor picks up from the hook.
 **DO NOT just exit.** Always use `gt handoff` for proper lifecycle.
 
 **IMPORTANT**: Never sleep-poll manually (e.g., `sleep 30 && bd list`).
-Always use `gt mol step await-event` — it's event-driven and tracks backoff state."""
+Always use `gt mol step await-event` — it's event-driven and tracks backoff state.
 
-# MERGE RULE (repeated at the end for agents that read only the tail of their prime):
-# land each MR with `gt mq land <rig> <mr-bead-id>`. Never `git merge --ff-only`, never
-# `bd close` a merge-request bead; skipping post-merge leaks the polecat's slot.
+**MERGE RULE (repeated here for sessions that only read the end of this prime):** land each MR
+with `gt mq land <rig> <mr-bead-id>`. Never `git merge --ff-only`, never `bd close` a
+merge-request bead: skipping post-merge leaves the polecat holding its slot."""
