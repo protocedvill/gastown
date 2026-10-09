@@ -40,10 +40,20 @@ func TestPlanDispatchSpillsUnassignedBeadsToSecondPool(t *testing.T) {
 		unassignedBead("b1"), unassignedBead("b2"), unassignedBead("b3"), unassignedBead("b4"),
 	}
 
-	plan := planDispatchWithAgentPools(snapshot, 8, ready, cfg, "strata")
+	plan, assigned := planDispatchWithAgentPools(snapshot, 8, ready, cfg, "strata")
 
 	if len(plan.ToDispatch) != 4 {
 		t.Fatalf("ToDispatch = %d (%v), want 4 (2 strata + 2 spilled to bunny)", len(plan.ToDispatch), dispatchedIDs(plan))
+	}
+	// The two default-pool beads keep their own (unset) agent; the two that spill
+	// must carry the assignment through to the spawn or they'd run the wrong model.
+	if _, ok := assigned["b1"]; ok {
+		t.Errorf("b1 fits the default pool and should not be reassigned: %v", assigned)
+	}
+	for _, id := range []string{"b3", "b4"} {
+		if assigned[id] != "bunny" {
+			t.Errorf("assigned[%s] = %q, want bunny", id, assigned[id])
+		}
 	}
 }
 
@@ -54,7 +64,7 @@ func TestPlanDispatchWithoutSpillKeepsUnassignedBeadsOnDefaultAgent(t *testing.T
 		unassignedBead("b1"), unassignedBead("b2"), unassignedBead("b3"), unassignedBead("b4"),
 	}
 
-	plan := planDispatchWithAgentPools(snapshot, 8, ready, cfg, "strata")
+	plan, _ := planDispatchWithAgentPools(snapshot, 8, ready, cfg, "strata")
 
 	if len(plan.ToDispatch) != 2 {
 		t.Fatalf("ToDispatch = %d (%v), want 2 (bunny is a pure ceiling without spill)",
@@ -75,7 +85,7 @@ func TestPlanDispatchPinnedBeadWaitsForItsOwnPool(t *testing.T) {
 		unassignedBead("free2"),
 	}
 
-	plan := planDispatchWithAgentPools(snapshot, 8, ready, cfg, "strata")
+	plan, _ := planDispatchWithAgentPools(snapshot, 8, ready, cfg, "strata")
 	ids := dispatchedIDs(plan)
 
 	if ids["pin"] {
@@ -94,7 +104,7 @@ func TestPlanDispatchUnlimitedDefaultAgentNeverSpills(t *testing.T) {
 		unassignedBead("b1"), unassignedBead("b2"), unassignedBead("b3"),
 	}
 
-	plan := planDispatchWithAgentPools(snapshot, 8, ready, cfg, "strata")
+	plan, _ := planDispatchWithAgentPools(snapshot, 8, ready, cfg, "strata")
 
 	if len(plan.ToDispatch) != 3 {
 		t.Errorf("ToDispatch = %d, want 3 (an uncapped default agent absorbs everything)", len(plan.ToDispatch))
@@ -108,7 +118,7 @@ func TestPlanDispatchPoolsAllFullWithNoDefaultAgent(t *testing.T) {
 	snapshot := polecatCapacitySnapshot{Max: 8, Free: 6, ByAgent: map[string]int{"strata": 1, "bunny": 1}}
 	ready := []capacity.PendingBead{unassignedBead("b1"), unassignedBead("b2")}
 
-	plan := planDispatchWithAgentPools(snapshot, 8, ready, cfg, "")
+	plan, _ := planDispatchWithAgentPools(snapshot, 8, ready, cfg, "")
 
 	if len(plan.ToDispatch) != 0 {
 		t.Fatalf("ToDispatch = %d, want 0", len(plan.ToDispatch))

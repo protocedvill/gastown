@@ -83,6 +83,11 @@ type schedulerDispatchPlan struct {
 	Scheduled   []scheduledBeadInfo
 	Ready       []capacity.PendingBead
 	Plan        capacity.DispatchPlan
+	// Assignments maps context bead ID -> the agent the pool planner chose for
+	// it. A bead absent from this map keeps whatever agent its sling named.
+	// Without this the spawn would fall back to the town default and a spilled
+	// bead would silently run on the wrong model.
+	Assignments map[string]string
 }
 
 // planDispatchWithAgentPools plans one dispatch cycle honouring per-agent pool
@@ -101,19 +106,25 @@ type schedulerDispatchPlan struct {
 //
 // With no pools configured this is exactly capacity.PlanDispatch.
 func planDispatchWithAgentPools(snapshot polecatCapacitySnapshot, batchSize int, ready []capacity.PendingBead,
-	schedulerCfg *capacity.SchedulerConfig, defaultAgent string) capacity.DispatchPlan {
+	schedulerCfg *capacity.SchedulerConfig, defaultAgent string) (capacity.DispatchPlan, map[string]string) {
 	limits := schedulerCfg.GetAgentPools()
 	if len(limits) == 0 {
-		return capacity.PlanDispatch(snapshot.Free, batchSize, ready)
+		return capacity.PlanDispatch(snapshot.Free, batchSize, ready), nil
 	}
 	pools := capacity.NewPoolUsage(limits, snapshot.ByAgent)
 	candidates := schedulerCfg.CandidateAgentsForUnassigned(defaultAgent)
 
+	// Only assignments that differ from the bead's own sling agent need to be
+	// carried through to the spawn; the rest already resolve correctly.
+	assigned := map[string]string{}
 	acquire := func(b capacity.PendingBead) bool {
 		if b.Context != nil {
 			if explicit := strings.TrimSpace(b.Context.Agent); explicit != "" {
 				// Pinned by the sling: its own pool, or wait.
-				return pools.TryAcquire(explicit)
+				if pools.TryAcquire(explicit) {
+					return true
+				}
+				return false
 			}
 		}
 		if len(candidates) == 0 {
@@ -121,12 +132,13 @@ func planDispatchWithAgentPools(snapshot polecatCapacitySnapshot, batchSize int,
 		}
 		for _, agent := range candidates {
 			if pools.TryAcquire(agent) {
+				assigned[b.ID] = agent
 				return true
 			}
 		}
 		return false
 	}
-	return capacity.PlanDispatchWithLimits(snapshot.Free, batchSize, ready, acquire)
+	return capacity.PlanDispatchWithLimits(snapshot.Free, batchSize, ready, acquire), assigned
 }
 
 func buildSchedulerDispatchPlan(townRoot string, batchOverride int, cleanup bool) (*schedulerDispatchPlan, error) {
@@ -172,7 +184,7 @@ func buildSchedulerDispatchPlan(townRoot string, batchOverride int, cleanup bool
 	}
 
 	ready := readySlingContextsFromAssessments(assessments)
-	dispatchPlan := planDispatchWithAgentPools(snapshot, batchSize, ready, schedulerCfg, settings.DefaultAgent)
+	dispatchPlan, assignments := planDispatchWithAgentPools(snapshot, batchSize, ready, schedulerCfg, settings.DefaultAgent)
 	if len(ready) > 0 {
 		switch {
 		case state.Paused:
@@ -191,6 +203,7 @@ func buildSchedulerDispatchPlan(townRoot string, batchOverride int, cleanup bool
 		Scheduled:   scheduledBeadInfosFromAssessments(assessments),
 		Ready:       ready,
 		Plan:        dispatchPlan,
+		Assignments: assignments,
 	}, nil
 }
 
@@ -256,12 +269,15 @@ func dispatchScheduledWork(townRoot, actor string, batchOverride int, dryRun boo
 	successfulRigs := make(map[string]bool)
 	// Track polecat names from dispatch results, keyed by context bead ID.
 	polecatNames := make(map[string]string)
+	// Agents chosen by the pool planner, keyed by context bead ID. A spill
+	// assignment must reach the spawn or the bead silently runs the wrong model.
+	assignments := dispatchPlan.Assignments
 	cycle := &capacity.DispatchCycle{
 		Validate: func(b capacity.PendingBead) error {
 			return validatePendingBeadForDispatch(townRoot, b, true)
 		},
 		Execute: func(b capacity.PendingBead) error {
-			result, err := dispatchSingleBead(b, townRoot, actor)
+			result, err := dispatchSingleBead(b, townRoot, actor, assignments[b.ID])
 			if err != nil {
 				return err
 			}
@@ -727,12 +743,21 @@ func readySlingContextsFromAssessments(assessments []scheduledContextAssessment)
 // dispatchSingleBead dispatches one scheduled bead via executeSling.
 // Context fields are already parsed (from PendingBead.Context).
 // Returns the SlingResult (including PolecatName) on success.
-func dispatchSingleBead(b capacity.PendingBead, townRoot, _ string) (*SlingResult, error) {
+//
+// agentOverride is the agent the pool planner assigned this bead (empty when the
+// bead keeps its own sling agent). The real pool check happens at admission
+// inside the spawn, so the planner stays an optimisation and admission remains
+// the source of truth.
+func dispatchSingleBead(b capacity.PendingBead, townRoot, _, agentOverride string) (*SlingResult, error) {
 	if b.Context == nil {
 		return nil, fmt.Errorf("missing sling context for %s", b.ID)
 	}
 
 	dp := capacity.ReconstructFromContext(b.Context)
+	dispatchAgent := dp.Agent
+	if agentOverride != "" {
+		dispatchAgent = agentOverride
+	}
 	targetBeadsDir := filepath.Join(townRoot, ".beads")
 	if dp.RigName != "" {
 		resolved, ok := beads.ResolveRepoAliasBeadsDir(townRoot, dp.RigName)
@@ -753,7 +778,7 @@ func dispatchSingleBead(b capacity.PendingBead, townRoot, _ string) (*SlingResul
 		NoMerge:          dp.NoMerge,
 		ReviewOnly:       dp.ReviewOnly,
 		Account:          dp.Account,
-		Agent:            dp.Agent,
+		Agent:            dispatchAgent,
 		HookRawBead:      dp.HookRawBead,
 		Mode:             dp.Mode,
 		FormulaFailFatal: true,
