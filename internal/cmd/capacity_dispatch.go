@@ -88,11 +88,16 @@ type schedulerDispatchPlan struct {
 // planDispatchWithAgentPools plans one dispatch cycle honouring per-agent pool
 // ceilings (scheduler.agent_pools).
 //
-// A bead's pool is the agent on its sling context, falling back to the town
-// default agent — the same resolution the spawn itself uses. Beads whose pool is
-// full are skipped rather than dispatched-and-failed: a dispatch failure burns
-// the bead's failure quota and can circuit-break it, which would silently drop
-// work whenever a pool stayed saturated.
+// A bead whose sling names an agent is pinned to that agent's pool and waits for
+// it. A bead that names none prefers the town default agent and then spills to
+// the agents in scheduler.agent_pool_spill, in order — that is what keeps a
+// second model's pool busy instead of letting it sit idle. With no spill
+// configured, unassigned beads never leave the default agent, so a pool is a
+// pure ceiling (which is what you want for capping an expensive model).
+//
+// Beads with no free pool are skipped rather than dispatched-and-failed: a
+// dispatch failure burns the bead's failure quota and can circuit-break it,
+// which would silently drop work whenever a pool stayed saturated.
 //
 // With no pools configured this is exactly capacity.PlanDispatch.
 func planDispatchWithAgentPools(snapshot polecatCapacitySnapshot, batchSize int, ready []capacity.PendingBead,
@@ -102,15 +107,26 @@ func planDispatchWithAgentPools(snapshot polecatCapacitySnapshot, batchSize int,
 		return capacity.PlanDispatch(snapshot.Free, batchSize, ready)
 	}
 	pools := capacity.NewPoolUsage(limits, snapshot.ByAgent)
-	agentOf := func(b capacity.PendingBead) string {
+	candidates := schedulerCfg.CandidateAgentsForUnassigned(defaultAgent)
+
+	acquire := func(b capacity.PendingBead) bool {
 		if b.Context != nil {
-			if agent := strings.TrimSpace(b.Context.Agent); agent != "" {
-				return agent
+			if explicit := strings.TrimSpace(b.Context.Agent); explicit != "" {
+				// Pinned by the sling: its own pool, or wait.
+				return pools.TryAcquire(explicit)
 			}
 		}
-		return strings.TrimSpace(defaultAgent)
+		if len(candidates) == 0 {
+			return true
+		}
+		for _, agent := range candidates {
+			if pools.TryAcquire(agent) {
+				return true
+			}
+		}
+		return false
 	}
-	return capacity.PlanDispatchWithLimits(snapshot.Free, batchSize, ready, agentOf, pools)
+	return capacity.PlanDispatchWithLimits(snapshot.Free, batchSize, ready, acquire)
 }
 
 func buildSchedulerDispatchPlan(townRoot string, batchOverride int, cleanup bool) (*schedulerDispatchPlan, error) {

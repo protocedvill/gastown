@@ -42,6 +42,16 @@ type SchedulerConfig struct {
 	// pools behaves exactly as before. A limit <= 0 is treated as unlimited.
 	// Pools are sub-ceilings inside MaxPolecats, which stays the town-wide total.
 	AgentPools map[string]int `json:"agent_pools,omitempty"`
+
+	// AgentPoolSpill lists agent aliases that may take work whose sling names no
+	// agent, in priority order. It is what lets a town actually fill a second
+	// pool: unassigned beads prefer the default agent's pool and then spill to
+	// the pools listed here.
+	//
+	// Empty by default, which means unassigned beads never leave the default
+	// agent — a pool is then a pure ceiling, which is what you want for capping
+	// an expensive model.
+	AgentPoolSpill []string `json:"agent_pool_spill,omitempty"`
 }
 
 // DefaultSchedulerConfig returns a SchedulerConfig with sensible defaults.
@@ -107,6 +117,38 @@ func (c *SchedulerConfig) GetAgentPoolLimit(agent string) (int, bool) {
 		return 0, false
 	}
 	return limit, true
+}
+
+// GetAgentPoolSpill returns the ordered aliases eligible for unassigned work.
+func (c *SchedulerConfig) GetAgentPoolSpill() []string {
+	if c == nil || len(c.AgentPoolSpill) == 0 {
+		return nil
+	}
+	return c.AgentPoolSpill
+}
+
+// CandidateAgentsForUnassigned returns the agents an unassigned bead may run as,
+// in priority order: the town default first, then the configured spill list.
+// Callers get an empty slice when nothing is configured, meaning "leave the
+// bead on the town default, whatever that is".
+func (c *SchedulerConfig) CandidateAgentsForUnassigned(defaultAgent string) []string {
+	var candidates []string
+	add := func(agent string) {
+		if agent == "" {
+			return
+		}
+		for _, existing := range candidates {
+			if existing == agent {
+				return
+			}
+		}
+		candidates = append(candidates, agent)
+	}
+	add(defaultAgent)
+	for _, agent := range c.GetAgentPoolSpill() {
+		add(agent)
+	}
+	return candidates
 }
 
 // ParseDurationOrDefault parses a Go duration string, returning fallback on error or empty input.

@@ -62,6 +62,31 @@ var configPoolListCmd = &cobra.Command{
 
 var configPoolListJSON bool
 
+// spill flags for `gt config pool set`.
+var (
+	configPoolSetSpill   bool
+	configPoolSetNoSpill bool
+)
+
+func stringListContains(list []string, want string) bool {
+	for _, item := range list {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
+func removeStringFromList(list []string, drop string) []string {
+	var kept []string
+	for _, item := range list {
+		if item != drop {
+			kept = append(kept, item)
+		}
+	}
+	return kept
+}
+
 // loadTownScheduler loads town settings plus the scheduler section, defaulting
 // when the town has no scheduler block yet.
 func loadTownScheduler(townRoot string) (*config.TownSettings, *capacity.SchedulerConfig, string, error) {
@@ -114,12 +139,24 @@ func runConfigPoolSet(cmd *cobra.Command, args []string) error {
 		schedulerCfg.AgentPools = map[string]int{}
 	}
 	schedulerCfg.AgentPools[agent] = limit
+	switch {
+	case configPoolSetSpill && !stringListContains(schedulerCfg.AgentPoolSpill, agent):
+		schedulerCfg.AgentPoolSpill = append(schedulerCfg.AgentPoolSpill, agent)
+	case configPoolSetNoSpill:
+		schedulerCfg.AgentPoolSpill = removeStringFromList(schedulerCfg.AgentPoolSpill, agent)
+	}
+	if len(schedulerCfg.AgentPoolSpill) == 0 {
+		schedulerCfg.AgentPoolSpill = nil
+	}
 	townSettings.Scheduler = schedulerCfg
 	if err := config.SaveTownSettings(settingsPath, townSettings); err != nil {
 		return fmt.Errorf("saving town settings: %w", err)
 	}
 
 	fmt.Printf("%s Pool %s = %d concurrent polecat(s)\n", style.Bold.Render("✓"), style.Bold.Render(agent), limit)
+	if stringListContains(schedulerCfg.AgentPoolSpill, agent) {
+		fmt.Printf("  spill: unassigned beads may run on %s once higher-priority pools are full\n", agent)
+	}
 
 	// Guidance only — an under-sized town-wide cap silently wins over the pools,
 	// and a direct-dispatch town never consults them during dispatch at all.
@@ -158,6 +195,10 @@ func runConfigPoolRemove(cmd *cobra.Command, args []string) error {
 	if len(schedulerCfg.AgentPools) == 0 {
 		schedulerCfg.AgentPools = nil
 	}
+	schedulerCfg.AgentPoolSpill = removeStringFromList(schedulerCfg.AgentPoolSpill, agent)
+	if len(schedulerCfg.AgentPoolSpill) == 0 {
+		schedulerCfg.AgentPoolSpill = nil
+	}
 	townSettings.Scheduler = schedulerCfg
 	if err := config.SaveTownSettings(settingsPath, townSettings); err != nil {
 		return fmt.Errorf("saving town settings: %w", err)
@@ -182,6 +223,7 @@ func runConfigPoolList(cmd *cobra.Command, args []string) error {
 	if configPoolListJSON {
 		out := map[string]any{
 			"pools":           pools,
+			"spill":           schedulerCfg.GetAgentPoolSpill(),
 			"max_polecats":    schedulerCfg.GetMaxPolecats(),
 			"pooled_total":    agentPoolSum(schedulerCfg),
 			"deferred":        schedulerCfg.IsDeferred(),
@@ -207,10 +249,20 @@ func runConfigPoolList(cmd *cobra.Command, args []string) error {
 	sort.Strings(agents)
 
 	fmt.Printf("Agent pools (town-wide total: %d, mode: %s)\n", schedulerCfg.GetMaxPolecats(), dispatchModeLabel(schedulerCfg))
+	spill := schedulerCfg.GetAgentPoolSpill()
 	for _, agent := range agents {
-		fmt.Printf("  %-24s %d\n", agent, pools[agent])
+		marker := ""
+		if stringListContains(spill, agent) {
+			marker = "  (spill)"
+		}
+		fmt.Printf("  %-24s %d%s\n", agent, pools[agent], marker)
 	}
 	fmt.Printf("\nPooled total: %d — agents with no entry above are unlimited.\n", agentPoolSum(schedulerCfg))
+	if len(spill) > 0 {
+		fmt.Printf("Unassigned beads fill the default agent first, then spill to: %s\n", strings.Join(spill, ", "))
+	} else {
+		fmt.Println("No spill configured — unassigned beads stay on the default agent, so pools are pure ceilings.")
+	}
 	return nil
 }
 
@@ -226,5 +278,7 @@ func init() {
 	configPoolCmd.AddCommand(configPoolRemoveCmd)
 	configPoolCmd.AddCommand(configPoolListCmd)
 	configPoolListCmd.Flags().BoolVar(&configPoolListJSON, "json", false, "Output as JSON")
+	configPoolSetCmd.Flags().BoolVar(&configPoolSetSpill, "spill", false, "Also let unassigned beads run on this agent once higher-priority pools are full")
+	configPoolSetCmd.Flags().BoolVar(&configPoolSetNoSpill, "no-spill", false, "Stop letting unassigned beads run on this agent")
 	configCmd.AddCommand(configPoolCmd)
 }

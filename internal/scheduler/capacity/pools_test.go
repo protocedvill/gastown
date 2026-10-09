@@ -10,6 +10,18 @@ func pendingWithAgent(id, agent string) PendingBead {
 	return b
 }
 
+// poolAcquire builds a PoolAcquire that runs each bead as the agent named on its
+// sling context — pins a bead to its own pool, refusing when that pool is full.
+func poolAcquire(pools *PoolUsage) PoolAcquire {
+	return func(b PendingBead) bool {
+		agent := ""
+		if b.Context != nil {
+			agent = b.Context.Agent
+		}
+		return pools.TryAcquire(agent)
+	}
+}
+
 func TestPoolUsageRemaining(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -61,9 +73,8 @@ func TestPlanDispatchWithLimitsSplitsByAgent(t *testing.T) {
 	}
 	// strata is saturated; bunny has room.
 	pools := &PoolUsage{Limits: map[string]int{"strata": 2, "bunny": 2}, InUse: map[string]int{"strata": 2}}
-	agentOf := func(b PendingBead) string { return b.Context.Agent }
 
-	plan := PlanDispatchWithLimits(8, 8, ready, agentOf, pools)
+	plan := PlanDispatchWithLimits(8, 8, ready, poolAcquire(pools))
 
 	if len(plan.ToDispatch) != 2 {
 		t.Fatalf("ToDispatch = %d (%v), want 2", len(plan.ToDispatch), plan.ToDispatch)
@@ -85,9 +96,8 @@ func TestPlanDispatchWithLimitsFillsPoolWithinOnePass(t *testing.T) {
 		pendingWithAgent("a3", "strata"),
 	}
 	pools := &PoolUsage{Limits: map[string]int{"strata": 2}}
-	agentOf := func(b PendingBead) string { return b.Context.Agent }
 
-	plan := PlanDispatchWithLimits(8, 8, ready, agentOf, pools)
+	plan := PlanDispatchWithLimits(8, 8, ready, poolAcquire(pools))
 
 	if len(plan.ToDispatch) != 2 {
 		t.Fatalf("ToDispatch = %d, want 2 (pool ceiling applies within a single pass)", len(plan.ToDispatch))
@@ -106,9 +116,8 @@ func TestPlanDispatchWithLimitsAllPoolsFull(t *testing.T) {
 		Limits: map[string]int{"strata": 1, "bunny": 1},
 		InUse:  map[string]int{"strata": 1, "bunny": 1},
 	}
-	agentOf := func(b PendingBead) string { return b.Context.Agent }
 
-	plan := PlanDispatchWithLimits(8, 8, ready, agentOf, pools)
+	plan := PlanDispatchWithLimits(8, 8, ready, poolAcquire(pools))
 
 	if len(plan.ToDispatch) != 0 {
 		t.Fatalf("ToDispatch = %d, want 0", len(plan.ToDispatch))
@@ -128,9 +137,8 @@ func TestPlanDispatchWithLimitsUnlistedAgentIsUnlimited(t *testing.T) {
 		pendingWithAgent("a3", "strata"),
 	}
 	pools := &PoolUsage{Limits: map[string]int{"bunny": 1}, InUse: map[string]int{"bunny": 1}}
-	agentOf := func(b PendingBead) string { return b.Context.Agent }
 
-	plan := PlanDispatchWithLimits(8, 8, ready, agentOf, pools)
+	plan := PlanDispatchWithLimits(8, 8, ready, poolAcquire(pools))
 
 	if len(plan.ToDispatch) != 3 {
 		t.Errorf("ToDispatch = %d, want 3 (an unlisted agent has no ceiling)", len(plan.ToDispatch))
@@ -143,9 +151,8 @@ func TestPlanDispatchWithLimitsNoPoolsMatchesPlanDispatch(t *testing.T) {
 		pendingWithAgent("b1", "bunny"),
 		pendingWithAgent("c1", "strata"),
 	}
-	agentOf := func(b PendingBead) string { return b.Context.Agent }
 
-	withPools := PlanDispatchWithLimits(2, 3, ready, agentOf, &PoolUsage{})
+	withPools := PlanDispatchWithLimits(2, 3, ready, poolAcquire(&PoolUsage{}))
 	without := PlanDispatch(2, 3, ready)
 
 	if len(withPools.ToDispatch) != len(without.ToDispatch) {
@@ -165,9 +172,8 @@ func TestPlanDispatchWithLimitsGlobalCapacityStillWins(t *testing.T) {
 		pendingWithAgent("b1", "bunny"),
 	}
 	pools := &PoolUsage{Limits: map[string]int{"strata": 4, "bunny": 4}}
-	agentOf := func(b PendingBead) string { return b.Context.Agent }
 
-	plan := PlanDispatchWithLimits(0, 4, ready, agentOf, pools)
+	plan := PlanDispatchWithLimits(0, 4, ready, poolAcquire(pools))
 
 	if len(plan.ToDispatch) != 0 {
 		t.Errorf("ToDispatch = %d, want 0 when the town-wide budget is exhausted", len(plan.ToDispatch))

@@ -67,23 +67,29 @@ func (u *PoolUsage) TryAcquire(agent string) bool {
 	return true
 }
 
+// PoolAcquire decides whether one more polecat may run for a pending bead.
+//
+// It both chooses the bead's agent and consumes a slot from that agent's pool,
+// so a single planning pass cannot over-commit a pool. Returning false leaves
+// the bead queued for a later cycle. A nil PoolAcquire means "no per-agent
+// ceilings" and every bead is admitted.
+type PoolAcquire func(PendingBead) bool
+
 // PlanDispatchWithLimits is PlanDispatch extended with per-agent pool ceilings.
 //
-// agentOf resolves the agent alias a pending bead will run as (the bead's sling
-// override, or the town default when it has none). pools carries the ceilings
-// and current occupancy; a slot is taken from the bead's pool as each bead is
-// planned, so one pass cannot over-commit a pool.
+// acquire both picks the agent a bead will run as and takes a slot from that
+// agent's pool (see PoolAcquire). Beads it refuses are skipped rather than
+// planned.
 //
-// Beads whose pool is full are skipped rather than planned. Skipping (not
-// failing) is deliberate: a dispatch failure consumes the bead's failure quota
-// and can circuit-break it, which would silently drop work whenever a pool
-// stayed saturated. Beads skipped for pool reasons report reason
+// Skipping (not failing) is deliberate: a dispatch failure consumes the bead's
+// failure quota and can circuit-break it, which would silently drop work
+// whenever a pool stayed saturated. Beads skipped for pool reasons report reason
 // "pool-capacity" so the skip is visible in scheduler output.
 //
 // The global capacity argument still bounds the cycle; pools are sub-ceilings
 // inside it.
 func PlanDispatchWithLimits(totalCapacity, batchSize int, ready []PendingBead,
-	agentOf func(PendingBead) string, pools *PoolUsage) DispatchPlan {
+	acquire PoolAcquire) DispatchPlan {
 	ready, msgSkipped := FilterMessagingBeads(ready)
 
 	if len(ready) == 0 {
@@ -111,11 +117,7 @@ func PlanDispatchWithLimits(totalCapacity, batchSize int, ready []PendingBead,
 		if len(toDispatch) >= budget {
 			break
 		}
-		agent := ""
-		if agentOf != nil {
-			agent = agentOf(b)
-		}
-		if pools != nil && !pools.TryAcquire(agent) {
+		if acquire != nil && !acquire(b) {
 			poolSkipped++
 			continue
 		}
