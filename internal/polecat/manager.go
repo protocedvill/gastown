@@ -1771,7 +1771,11 @@ func (m *Manager) ReuseIdlePolecat(name string, opts AddOptions) (*Polecat, erro
 	}
 	if current.Issue == "" {
 		switch current.State {
-		case StateWorking, StateStalled, StateReviewNeeded:
+		case StateWorking, StateStalled, StateReviewNeeded, StateDone:
+			// Done belongs here with the live states: a finished polecat's
+			// sandbox is kept for reuse, so treat it as an idle slot (which also
+			// clears any lingering session below) rather than accumulating
+			// directories until the rig cap wedges dispatch.
 			current.State = StateIdle
 		}
 	}
@@ -2281,15 +2285,32 @@ func (m *Manager) List() ([]*Polecat, error) {
 	return polecats, nil
 }
 
-// FindIdlePolecat returns the first idle polecat in the rig, or nil if none.
-// Idle means no hook, no active session, and no pending completion/MR cleanup state.
+// SlotReuseCandidateState reports whether a polecat in this lifecycle state may
+// be offered as a reuse slot before a new directory is allocated.
+//
+// StateDone is included deliberately: a finished polecat keeps its sandbox for
+// reuse and nothing transitions it back to idle, so gating reuse on StateIdle
+// alone let finished polecats accumulate one directory each until the rig hit
+// its directory cap — after which every dispatch failed until an operator nuked
+// them by hand. The reuse decision itself (workstate disposition) still has the
+// final say on whether the slot is actually safe to reuse.
+func SlotReuseCandidateState(state State) bool {
+	return state == StateIdle || state == StateDone
+}
+
+// FindIdlePolecat returns a polecat that can be reused for new work, or nil when
+// none is available. It prefers nothing in particular; callers only need "a
+// reusable slot".
 func (m *Manager) FindIdlePolecat() (*Polecat, error) {
 	polecats, err := m.List()
 	if err != nil {
 		return nil, err
 	}
 	for _, p := range polecats {
-		if p.State == StateIdle && m.reuseDecisionForPolecat(p.Name, p.State).Reusable {
+		if !SlotReuseCandidateState(p.State) {
+			continue
+		}
+		if m.reuseDecisionForPolecat(p.Name, p.State).Reusable {
 			return p, nil
 		}
 	}
