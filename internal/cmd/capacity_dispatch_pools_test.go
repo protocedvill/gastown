@@ -45,14 +45,12 @@ func TestPlanDispatchSpillsUnassignedBeadsToSecondPool(t *testing.T) {
 	if len(plan.ToDispatch) != 4 {
 		t.Fatalf("ToDispatch = %d (%v), want 4 (2 strata + 2 spilled to bunny)", len(plan.ToDispatch), dispatchedIDs(plan))
 	}
-	// The two default-pool beads keep their own (unset) agent; the two that spill
-	// must carry the assignment through to the spawn or they'd run the wrong model.
-	if _, ok := assigned["b1"]; ok {
-		t.Errorf("b1 fits the default pool and should not be reassigned: %v", assigned)
-	}
-	for _, id := range []string{"b3", "b4"} {
-		if assigned[id] != "bunny" {
-			t.Errorf("assigned[%s] = %q, want bunny", id, assigned[id])
+	// Every planned bead carries the agent the planner reserved for it: the first
+	// two stay on the default pool, the last two spill to bunny.
+	want := map[string]string{"b1": "strata", "b2": "strata", "b3": "bunny", "b4": "bunny"}
+	for id, agent := range want {
+		if assigned[id] != agent {
+			t.Errorf("assigned[%s] = %q, want %q (assignments: %v)", id, assigned[id], agent, assigned)
 		}
 	}
 }
