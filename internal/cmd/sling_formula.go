@@ -307,7 +307,7 @@ func runSlingFormula(ctx context.Context, args []string) (err error) {
 			admissionRig = rigName
 		}
 		if admissionRig != "" {
-			admission, _, err = acquirePolecatAdmissionFn(townRoot, admissionRig, formulaName, "formula")
+			admission, _, err = acquirePolecatAdmissionFn(townRoot, admissionRig, formulaName, "formula", slingAgent)
 			if err != nil {
 				return err
 			}
@@ -450,7 +450,7 @@ func runSlingFormula(ctx context.Context, args []string) (err error) {
 	if admission == nil && strings.Contains(targetAgent, "/polecats/") {
 		parts := strings.Split(targetAgent, "/")
 		if len(parts) >= 3 {
-			admission, _, err = acquirePolecatAdmissionFn(townRoot, parts[0], formulaName, "formula")
+			admission, _, err = acquirePolecatAdmissionFn(townRoot, parts[0], formulaName, "formula", slingAgent)
 			if err != nil {
 				return err
 			}

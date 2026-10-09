@@ -30,7 +30,24 @@ type polecatCapacitySnapshot struct {
 	Reservations    int `json:"reservations"`
 	Free            int `json:"free"`
 	ActiveSessions  int `json:"active_sessions"`
-	capacityUsed    int
+	// ByAgent counts occupied slots per agent alias (running polecats plus live
+	// admission reservations). Drives per-agent pools; see scheduler.agent_pools.
+	// Polecats whose agent cannot be resolved are omitted, so they consume only
+	// the town-wide budget.
+	ByAgent      map[string]int `json:"by_agent,omitempty"`
+	capacityUsed int
+}
+
+// occupyAgent records one occupied slot against an agent's pool. Empty alias is
+// ignored: an unknown agent cannot be attributed to a pool.
+func (s *polecatCapacitySnapshot) occupyAgent(agent string) {
+	if agent == "" {
+		return
+	}
+	if s.ByAgent == nil {
+		s.ByAgent = map[string]int{}
+	}
+	s.ByAgent[agent]++
 }
 
 func (s polecatCapacitySnapshot) occupied() int {
@@ -63,6 +80,7 @@ type polecatAdmissionReservation struct {
 	Rig       string    `json:"rig,omitempty"`
 	Bead      string    `json:"bead,omitempty"`
 	Operation string    `json:"operation"`
+	Agent     string    `json:"agent,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -108,7 +126,7 @@ func (e *polecatCapacityAdmissionError) Error() string {
 	)
 }
 
-func acquirePolecatAdmission(townRoot, rigName, beadID, operation string) (*polecatAdmissionHandle, polecatCapacitySnapshot, error) {
+func acquirePolecatAdmission(townRoot, rigName, beadID, operation, agent string) (*polecatAdmissionHandle, polecatCapacitySnapshot, error) {
 	max, err := configuredSchedulerMaxPolecats(townRoot)
 	if err != nil {
 		return nil, polecatCapacitySnapshot{}, err
@@ -140,13 +158,42 @@ func acquirePolecatAdmission(townRoot, rigName, beadID, operation string) (*pole
 		}
 	}
 
-	reservation, path, err := writePolecatAdmissionReservation(townRoot, rigName, beadID, operation)
+	// Per-agent pool ceiling (scheduler.agent_pools). Opt-in: no pools
+	// configured means no refusal here.
+	schedulerCfg, err := configuredScheduler(townRoot)
+	if err != nil {
+		return nil, snapshot, err
+	}
+	if reason := agentPoolAdmissionReason(schedulerCfg, agent, snapshot); reason != "" {
+		return nil, snapshot, &polecatCapacityAdmissionError{
+			Snapshot: snapshot,
+			Rig:      rigName,
+			Bead:     beadID,
+			Reason:   reason,
+		}
+	}
+
+	reservation, path, err := writePolecatAdmissionReservation(townRoot, rigName, beadID, operation, agent)
 	if err != nil {
 		return nil, snapshot, err
 	}
 	snapshot.Reservations++
 	snapshot.Free--
+	snapshot.occupyAgent(agent)
 	return &polecatAdmissionHandle{townRoot: townRoot, id: reservation.ID, path: path}, snapshot, nil
+}
+
+// configuredScheduler returns the town's scheduler config, falling back to
+// defaults when the town has no explicit scheduler section.
+func configuredScheduler(townRoot string) (*capacity.SchedulerConfig, error) {
+	settings, err := config.LoadOrCreateTownSettings(config.TownSettingsPath(townRoot))
+	if err != nil {
+		return nil, fmt.Errorf("loading town settings for polecat admission: %w", err)
+	}
+	if settings.Scheduler == nil {
+		return capacity.DefaultSchedulerConfig(), nil
+	}
+	return settings.Scheduler, nil
 }
 
 func configuredSchedulerMaxPolecats(townRoot string) (int, error) {
@@ -159,6 +206,26 @@ func configuredSchedulerMaxPolecats(townRoot string) (int, error) {
 		schedulerCfg = capacity.DefaultSchedulerConfig()
 	}
 	return schedulerCfg.GetMaxPolecats(), nil
+}
+
+// agentPoolAdmissionReason reports why an agent's pool refuses another polecat,
+// or "" when the agent may proceed.
+//
+// Opt-in by design: an agent with no entry in scheduler.agent_pools has no
+// ceiling, so a town that configures no pools never refuses here and behaviour
+// is unchanged.
+func agentPoolAdmissionReason(schedulerCfg *capacity.SchedulerConfig, agent string, snapshot polecatCapacitySnapshot) string {
+	limit, ok := schedulerCfg.GetAgentPoolLimit(agent)
+	if !ok {
+		return ""
+	}
+	used := snapshot.ByAgent[agent]
+	if used >= limit {
+		return fmt.Sprintf(
+			"agent pool %q is full (%d/%d concurrent polecats). Wait for a polecat to finish, raise scheduler.agent_pools.%s, or raise scheduler.max_polecats",
+			agent, used, limit, agent)
+	}
+	return ""
 }
 
 func polecatCapacitySnapshotForTown(townRoot string) (polecatCapacitySnapshot, error) {
@@ -235,6 +302,11 @@ func polecatCapacitySnapshotForTownNoCleanup(townRoot string) (polecatCapacitySn
 		return snapshot, err
 	}
 	snapshot.Reservations = len(reservations)
+	// Live reservations hold a slot just as a running polecat does, so they
+	// count against the agent's pool too.
+	for _, reservation := range reservations {
+		snapshot.occupyAgent(reservation.Agent)
+	}
 	if max > 0 {
 		snapshot.Free = max - snapshot.occupied()
 		if snapshot.Free < 0 {
@@ -262,12 +334,28 @@ func listPolecatDirectoryNames(rigPath string) ([]string, error) {
 	return names, nil
 }
 
-func applyAgentFieldsToCapacitySnapshot(snapshot *polecatCapacitySnapshot, rigName, polecatName string, fields *beads.AgentFields, activeWork *beads.Issue, sessions polecatSessionSet) {
-	item := buildPolecatInventoryItem(rigName, polecatName, fields, activeWork, sessions)
-	applyWorkstateDispositionToCapacitySnapshot(snapshot, item.State, item.Disposition)
+// polecatAgentFromSession resolves a polecat's agent alias from its tmux session
+// environment (GT_AGENT) — the same source gt nudge/handoff use to identify a
+// session's runtime. Returns "" when the polecat has no live session or the
+// variable is unset; such a polecat consumes only the town-wide budget.
+func polecatAgentFromSession(sessions polecatSessionSet, rigName, polecatName string) string {
+	sessionName, ok := sessions.lookup(rigName, polecatName)
+	if !ok {
+		return ""
+	}
+	agentName, err := tmux.NewTmux().GetEnvironment(sessionName, "GT_AGENT")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(agentName)
 }
 
-func applyWorkstateDispositionToCapacitySnapshot(snapshot *polecatCapacitySnapshot, state polecat.State, disposition polecat.WorkstateDisposition) {
+func applyAgentFieldsToCapacitySnapshot(snapshot *polecatCapacitySnapshot, rigName, polecatName string, fields *beads.AgentFields, activeWork *beads.Issue, sessions polecatSessionSet) {
+	item := buildPolecatInventoryItem(rigName, polecatName, fields, activeWork, sessions)
+	applyWorkstateDispositionToCapacitySnapshot(snapshot, item.State, item.Disposition, polecatAgentFromSession(sessions, rigName, polecatName))
+}
+
+func applyWorkstateDispositionToCapacitySnapshot(snapshot *polecatCapacitySnapshot, state polecat.State, disposition polecat.WorkstateDisposition, agent string) {
 	if disposition.ReuseStatus == "idle-pr-open" {
 		snapshot.addPendingMR()
 		return
@@ -278,14 +366,19 @@ func applyWorkstateDispositionToCapacitySnapshot(snapshot *polecatCapacitySnapsh
 	}
 	if disposition.NeedsRecovery {
 		snapshot.addRecoveryBlocked(disposition.CountsTowardCapacity)
+		if disposition.CountsTowardCapacity {
+			snapshot.occupyAgent(agent)
+		}
 		return
 	}
 	if state == polecat.StateWorking || disposition.Verdict == polecat.WorkstateVerdictWorking {
 		snapshot.addWorking()
+		snapshot.occupyAgent(agent)
 		return
 	}
 	if disposition.CountsTowardCapacity {
 		snapshot.addRecoveryBlocked(true)
+		snapshot.occupyAgent(agent)
 	}
 }
 
@@ -309,7 +402,7 @@ func polecatAdmissionDir(townRoot string) string {
 	return filepath.Join(townRoot, ".runtime", "polecat-admission")
 }
 
-func writePolecatAdmissionReservation(townRoot, rigName, beadID, operation string) (polecatAdmissionReservation, string, error) {
+func writePolecatAdmissionReservation(townRoot, rigName, beadID, operation, agent string) (polecatAdmissionReservation, string, error) {
 	dir := polecatAdmissionDir(townRoot)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return polecatAdmissionReservation{}, "", fmt.Errorf("creating polecat admission dir: %w", err)
@@ -322,6 +415,7 @@ func writePolecatAdmissionReservation(townRoot, rigName, beadID, operation strin
 		Rig:       rigName,
 		Bead:      beadID,
 		Operation: operation,
+		Agent:     agent,
 		CreatedAt: now,
 	}
 	path := filepath.Join(dir, id+".json")

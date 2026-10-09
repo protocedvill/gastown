@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -84,6 +85,34 @@ type schedulerDispatchPlan struct {
 	Plan        capacity.DispatchPlan
 }
 
+// planDispatchWithAgentPools plans one dispatch cycle honouring per-agent pool
+// ceilings (scheduler.agent_pools).
+//
+// A bead's pool is the agent on its sling context, falling back to the town
+// default agent — the same resolution the spawn itself uses. Beads whose pool is
+// full are skipped rather than dispatched-and-failed: a dispatch failure burns
+// the bead's failure quota and can circuit-break it, which would silently drop
+// work whenever a pool stayed saturated.
+//
+// With no pools configured this is exactly capacity.PlanDispatch.
+func planDispatchWithAgentPools(snapshot polecatCapacitySnapshot, batchSize int, ready []capacity.PendingBead,
+	schedulerCfg *capacity.SchedulerConfig, defaultAgent string) capacity.DispatchPlan {
+	limits := schedulerCfg.GetAgentPools()
+	if len(limits) == 0 {
+		return capacity.PlanDispatch(snapshot.Free, batchSize, ready)
+	}
+	pools := capacity.NewPoolUsage(limits, snapshot.ByAgent)
+	agentOf := func(b capacity.PendingBead) string {
+		if b.Context != nil {
+			if agent := strings.TrimSpace(b.Context.Agent); agent != "" {
+				return agent
+			}
+		}
+		return strings.TrimSpace(defaultAgent)
+	}
+	return capacity.PlanDispatchWithLimits(snapshot.Free, batchSize, ready, agentOf, pools)
+}
+
 func buildSchedulerDispatchPlan(townRoot string, batchOverride int, cleanup bool) (*schedulerDispatchPlan, error) {
 	state, err := capacity.LoadState(townRoot)
 	if err != nil {
@@ -127,7 +156,7 @@ func buildSchedulerDispatchPlan(townRoot string, batchOverride int, cleanup bool
 	}
 
 	ready := readySlingContextsFromAssessments(assessments)
-	dispatchPlan := capacity.PlanDispatch(snapshot.Free, batchSize, ready)
+	dispatchPlan := planDispatchWithAgentPools(snapshot, batchSize, ready, schedulerCfg, settings.DefaultAgent)
 	if len(ready) > 0 {
 		switch {
 		case state.Paused:

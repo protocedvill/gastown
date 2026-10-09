@@ -10,9 +10,10 @@ import "time"
 // API rate limits, memory, and CPU are shared resources across all rigs.
 //
 // Behavior is driven entirely by MaxPolecats:
-//   -1 (default): direct dispatch — gt sling works as before, near-zero overhead
-//    0:           direct dispatch (same as -1)
-//    N > 0:       deferred dispatch — labels/metadata applied, daemon dispatches
+//
+//	-1 (default): direct dispatch — gt sling works as before, near-zero overhead
+//	 0:           direct dispatch (same as -1)
+//	 N > 0:       deferred dispatch — labels/metadata applied, daemon dispatches
 type SchedulerConfig struct {
 	// MaxPolecats is the max concurrent polecats across ALL rigs.
 	// Includes both scheduler-dispatched and directly-slung polecats.
@@ -28,6 +29,19 @@ type SchedulerConfig struct {
 	// SpawnDelay is the delay between spawns to prevent Dolt lock contention.
 	// Default: "0s".
 	SpawnDelay string `json:"spawn_delay,omitempty"`
+
+	// AgentPools caps concurrent polecats per agent alias, so a town can run
+	// several models side by side (e.g. 4 on a local model, 4 on a hosted one)
+	// without either starving the other.
+	//
+	// Maps agent alias -> max concurrent polecats for that agent. Only
+	// meaningful in deferred dispatch (MaxPolecats > 0); directly-slung polecats
+	// still respect their pool at admission.
+	//
+	// Opt-in: an agent with no entry here is unlimited, so a town that sets no
+	// pools behaves exactly as before. A limit <= 0 is treated as unlimited.
+	// Pools are sub-ceilings inside MaxPolecats, which stays the town-wide total.
+	AgentPools map[string]int `json:"agent_pools,omitempty"`
 }
 
 // DefaultSchedulerConfig returns a SchedulerConfig with sensible defaults.
@@ -70,6 +84,29 @@ func (c *SchedulerConfig) GetSpawnDelay() time.Duration {
 // (max_polecats > 0). Returns false for direct dispatch (-1) and disabled (0).
 func (c *SchedulerConfig) IsDeferred() bool {
 	return c.GetMaxPolecats() > 0
+}
+
+// GetAgentPools returns the per-agent polecat ceilings, or nil when unset.
+func (c *SchedulerConfig) GetAgentPools() map[string]int {
+	if c == nil || len(c.AgentPools) == 0 {
+		return nil
+	}
+	return c.AgentPools
+}
+
+// HasAgentPools reports whether any per-agent ceilings are configured.
+func (c *SchedulerConfig) HasAgentPools() bool {
+	return len(c.GetAgentPools()) > 0
+}
+
+// GetAgentPoolLimit returns the configured ceiling for one agent alias, and
+// whether that agent has a finite ceiling at all.
+func (c *SchedulerConfig) GetAgentPoolLimit(agent string) (int, bool) {
+	limit, ok := c.GetAgentPools()[agent]
+	if !ok || limit <= 0 {
+		return 0, false
+	}
+	return limit, true
 }
 
 // ParseDurationOrDefault parses a Go duration string, returning fallback on error or empty input.

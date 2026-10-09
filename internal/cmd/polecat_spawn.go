@@ -151,7 +151,7 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (_ *SpawnedPol
 
 	var admission *polecatAdmissionHandle
 	if !opts.SkipAdmission {
-		admission, _, err = acquirePolecatAdmissionFn(townRoot, rigName, opts.HookBead, "spawn-or-reuse")
+		admission, _, err = acquirePolecatAdmissionFn(townRoot, rigName, opts.HookBead, "spawn-or-reuse", opts.Agent)
 		if err != nil {
 			return nil, err
 		}

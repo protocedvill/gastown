@@ -183,7 +183,7 @@ func TestCapacitySnapshotKeepsOldLiveReservation(t *testing.T) {
 func TestAcquirePolecatAdmissionUsesConfiguredCap(t *testing.T) {
 	townRoot := setupPolecatCapacityTestTown(t, 1)
 
-	first, snapshot, err := acquirePolecatAdmission(townRoot, "gastown", "gt-one", "test")
+	first, snapshot, err := acquirePolecatAdmission(townRoot, "gastown", "gt-one", "test", "")
 	if err != nil {
 		t.Fatalf("first admission: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestAcquirePolecatAdmissionUsesConfiguredCap(t *testing.T) {
 		t.Fatalf("snapshot after first admission = %+v, want max=1 reservations=1 free=0", snapshot)
 	}
 
-	second, deniedSnapshot, err := acquirePolecatAdmission(townRoot, "gastown", "gt-two", "test")
+	second, deniedSnapshot, err := acquirePolecatAdmission(townRoot, "gastown", "gt-two", "test", "")
 	if second != nil {
 		defer second.Release()
 	}
@@ -208,7 +208,7 @@ func TestAcquirePolecatAdmissionUsesConfiguredCap(t *testing.T) {
 	}
 
 	first.Release()
-	third, snapshot, err := acquirePolecatAdmission(townRoot, "gastown", "gt-three", "test")
+	third, snapshot, err := acquirePolecatAdmission(townRoot, "gastown", "gt-three", "test", "")
 	if err != nil {
 		t.Fatalf("third admission after release: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestAcquirePolecatAdmissionDisabledWhenSchedulerCapNonPositive(t *testing.T
 			townRoot := t.TempDir()
 			configureScheduler(t, townRoot, maxPolecats, 1)
 
-			handle, snapshot, err := acquirePolecatAdmission(townRoot, "gastown", "gt-one", "test")
+			handle, snapshot, err := acquirePolecatAdmission(townRoot, "gastown", "gt-one", "test", "")
 			if err != nil {
 				t.Fatalf("admission with max=%d: %v", maxPolecats, err)
 			}
@@ -256,7 +256,7 @@ func TestConcurrentPolecatAdmissionReservationsDoNotExceedCap(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			handle, _, err := acquirePolecatAdmission(townRoot, "gastown", "gt-race", "test")
+			handle, _, err := acquirePolecatAdmission(townRoot, "gastown", "gt-race", "test", "")
 			mu.Lock()
 			defer mu.Unlock()
 			if err == nil {
@@ -339,12 +339,12 @@ func TestCapacitySnapshotRecoveryBlockedDoesNotAlwaysConsumeFreeCapacity(t *test
 		Verdict:              polecat.WorkstateVerdictNeedsRecovery,
 		NeedsRecovery:        true,
 		CountsTowardCapacity: false,
-	})
+	}, "")
 	applyWorkstateDispositionToCapacitySnapshot(&snapshot, polecat.StateStalled, polecat.WorkstateDisposition{
 		Verdict:              polecat.WorkstateVerdictNeedsRecovery,
 		NeedsRecovery:        true,
 		CountsTowardCapacity: true,
-	})
+	}, "")
 	snapshot.Free = snapshot.Max - snapshot.occupied()
 
 	if snapshot.RecoveryBlocked != 2 || snapshot.capacityUsed != 1 || snapshot.Free != 2 {
@@ -461,7 +461,7 @@ func TestStandaloneFormulaRigTargetAcquiresSingleAdmission(t *testing.T) {
 	slingDryRun = false
 	slingNoBoot = true
 	admissions := 0
-	acquirePolecatAdmissionFn = func(townRootArg, rigName, beadID, operation string) (*polecatAdmissionHandle, polecatCapacitySnapshot, error) {
+	acquirePolecatAdmissionFn = func(townRootArg, rigName, beadID, operation, agent string) (*polecatAdmissionHandle, polecatCapacitySnapshot, error) {
 		admissions++
 		if townRootArg != townRoot || rigName != "gastown" || beadID != "test-formula" || operation != "formula" {
 			t.Fatalf("admission args = (%q,%q,%q,%q)", townRootArg, rigName, beadID, operation)
@@ -504,7 +504,7 @@ func TestStandaloneFormulaExistingPolecatNoopDoesNotRequireCapacity(t *testing.T
 		slingDryRun = oldDryRun
 	})
 	slingDryRun = false
-	acquirePolecatAdmissionFn = func(townRootArg, rigName, beadID, operation string) (*polecatAdmissionHandle, polecatCapacitySnapshot, error) {
+	acquirePolecatAdmissionFn = func(townRootArg, rigName, beadID, operation, agent string) (*polecatAdmissionHandle, polecatCapacitySnapshot, error) {
 		t.Fatalf("no-op existing formula should not acquire capacity, got (%q,%q,%q,%q)", townRootArg, rigName, beadID, operation)
 		return nil, polecatCapacitySnapshot{}, nil
 	}

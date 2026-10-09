@@ -292,7 +292,7 @@ func TestWorkstateDispositionProjectionAgreement(t *testing.T) {
 				t.Fatalf("recovery projection = %+v", recovery)
 			}
 			snapshot := polecatCapacitySnapshot{}
-			applyWorkstateDispositionToCapacitySnapshot(&snapshot, tt.in.State, disposition)
+			applyWorkstateDispositionToCapacitySnapshot(&snapshot, tt.in.State, disposition, "")
 			if snapshot.Working != tt.wantCapacity.Working || snapshot.RecoveryBlocked != tt.wantCapacity.RecoveryBlocked || snapshot.ReusableIdle != tt.wantCapacity.ReusableIdle || snapshot.PendingMR != tt.wantCapacity.PendingMR {
 				t.Fatalf("capacity projection = %+v, want %+v", snapshot, tt.wantCapacity)
 			}
