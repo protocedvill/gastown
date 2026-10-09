@@ -85,7 +85,7 @@ func TestDispatchSingleBeadRawReviewOnlyHookFailureClearsMetadata(t *testing.T) 
 			NoMerge:     true,
 			ReviewOnly:  true,
 		},
-	}, townRoot, "test")
+	}, townRoot, "test", "")
 	if err == nil {
 		t.Fatal("expected scheduler dispatch hook failure")
 	}
