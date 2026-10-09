@@ -164,7 +164,16 @@ func acquirePolecatAdmission(townRoot, rigName, beadID, operation, agent string)
 	if err != nil {
 		return nil, snapshot, err
 	}
-	if reason := agentPoolAdmissionReason(schedulerCfg, agent, snapshot); reason != "" {
+	// A spawn with no explicit agent runs the town default, so that is the pool
+	// it must be checked against — otherwise a direct `gt sling` without --agent
+	// would quietly over-fill the default agent's pool.
+	effectiveAgent := strings.TrimSpace(agent)
+	if effectiveAgent == "" {
+		if defaultAgent, derr := townDefaultAgent(townRoot); derr == nil {
+			effectiveAgent = defaultAgent
+		}
+	}
+	if reason := agentPoolAdmissionReason(schedulerCfg, effectiveAgent, snapshot); reason != "" {
 		return nil, snapshot, &polecatCapacityAdmissionError{
 			Snapshot: snapshot,
 			Rig:      rigName,
@@ -173,14 +182,24 @@ func acquirePolecatAdmission(townRoot, rigName, beadID, operation, agent string)
 		}
 	}
 
-	reservation, path, err := writePolecatAdmissionReservation(townRoot, rigName, beadID, operation, agent)
+	reservation, path, err := writePolecatAdmissionReservation(townRoot, rigName, beadID, operation, effectiveAgent)
 	if err != nil {
 		return nil, snapshot, err
 	}
 	snapshot.Reservations++
 	snapshot.Free--
-	snapshot.occupyAgent(agent)
+	snapshot.occupyAgent(effectiveAgent)
 	return &polecatAdmissionHandle{townRoot: townRoot, id: reservation.ID, path: path}, snapshot, nil
+}
+
+// townDefaultAgent returns the town's default agent alias ("" when unset), which
+// is the agent an un-overridden spawn will run as.
+func townDefaultAgent(townRoot string) (string, error) {
+	settings, err := config.LoadOrCreateTownSettings(config.TownSettingsPath(townRoot))
+	if err != nil {
+		return "", fmt.Errorf("loading town settings for default agent: %w", err)
+	}
+	return strings.TrimSpace(settings.DefaultAgent), nil
 }
 
 // configuredScheduler returns the town's scheduler config, falling back to

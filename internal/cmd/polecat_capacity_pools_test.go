@@ -131,3 +131,39 @@ func TestAcquirePolecatAdmissionWithoutPoolsIsUnchanged(t *testing.T) {
 		t.Errorf("no pools are configured, so the error must not mention one: %v", err)
 	}
 }
+
+func TestAcquirePolecatAdmissionChecksDefaultAgentPoolWhenAgentUnset(t *testing.T) {
+	townRoot := t.TempDir()
+	maxPolecats, batchSize := 8, 1
+	settings := config.NewTownSettings()
+	settings.DefaultAgent = "strata"
+	settings.Scheduler = &capacity.SchedulerConfig{
+		MaxPolecats: &maxPolecats,
+		BatchSize:   &batchSize,
+		AgentPools:  map[string]int{"strata": 1},
+	}
+	writeJSONFile(t, config.TownSettingsPath(townRoot), settings)
+	if err := config.SaveRigsConfig(filepath.Join(townRoot, "mayor", "rigs.json"),
+		&config.RigsConfig{Version: config.CurrentRigsVersion}); err != nil {
+		t.Fatalf("SaveRigsConfig: %v", err)
+	}
+
+	first, _, err := acquirePolecatAdmission(townRoot, "gastown", "gt-one", "test", "")
+	if err != nil {
+		t.Fatalf("first admission: %v", err)
+	}
+	defer releaseAdmission(first)
+
+	// A direct sling with no --agent runs the town default, so the default
+	// agent's pool must gate it rather than letting it slip through uncharged.
+	second, _, err := acquirePolecatAdmission(townRoot, "gastown", "gt-two", "test", "")
+	if second != nil {
+		defer releaseAdmission(second)
+	}
+	if err == nil {
+		t.Fatal("an unset agent must be charged to the default agent's pool")
+	}
+	if !strings.Contains(err.Error(), "agent pool") {
+		t.Errorf("error = %v, want a pool refusal", err)
+	}
+}
